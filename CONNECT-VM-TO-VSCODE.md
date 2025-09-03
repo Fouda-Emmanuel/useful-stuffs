@@ -1,7 +1,5 @@
-Ah! I see exactly what you mean — some of the code blocks and text were inconsistently marked. No problem. I’ll rewrite **everything fully in proper Markdown**, so every section, code block, table, and text is Markdown-compatible and ready to copy-paste directly into a README.md.
-
+## VS Code Remote-SSH Setup for Any Linux VM (with Vagrant Appendix)
 ````markdown
-# VS Code Remote-SSH Setup for Any Linux VM (with Vagrant Appendix)
 
 This guide explains how to connect **VS Code on Windows** (or any host OS) to a **Linux VM** (Ubuntu, CentOS, Debian, etc.) using **Remote-SSH**, including a dedicated section for **Vagrant users**.
 
