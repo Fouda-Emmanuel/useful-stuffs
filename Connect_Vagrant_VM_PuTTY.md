@@ -12,9 +12,9 @@ You will learn how to:
 * Connect to each VM via PuTTY
 * Understand VM networking and private/public access
 
-> **Why use PuTTY with Vagrant?**  
->
-> Vagrant creates Linux VMs with OpenSSH keys. Windows users need PuTTY to SSH, which requires converting these keys into `.ppk` format. This guide ensures **passwordless and secure connections** to your local VMs.
+ **Why use PuTTY with Vagrant?**  
+
+ Vagrant creates Linux VMs with OpenSSH keys. Windows users need PuTTY to SSH, which requires converting these keys into `.ppk` format. This guide ensures **passwordless and secure connections** to your local VMs.
 
 ---
 
