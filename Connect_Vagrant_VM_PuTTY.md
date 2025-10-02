@@ -38,7 +38,7 @@ ansible-lab/
 └── db01.ppk
 ```
 
-> **Note:** The `.ppk` files will be created during Step 3.
+ **Note:** The `.ppk` files will be created during Step 3.
 
 ---
 
@@ -58,7 +58,7 @@ vagrant up
 vagrant status
 ```
 
-> The VMs will have both **private network IPs** for inter-VM communication and **public network ports** for SSH from your laptop.
+The VMs will have both **private network IPs** for inter-VM communication and **public network ports** for SSH from your laptop.
 
 ---
 
@@ -80,11 +80,11 @@ Host control
   IdentityFile "C:/path/to/ansible-lab/.vagrant/machines/control/virtualbox/private_key"
 ```
 
-> **Explanation:**
->
-> * **HostName** → IP for SSH (`127.0.0.1` is localhost)
-> * **Port** → forwarded port (unique per VM)
-> * **IdentityFile** → path to the private key used for passwordless login
+ **Explanation:**
+
+ * **HostName** → IP for SSH (`127.0.0.1` is localhost)
+ * **Port** → forwarded port (unique per VM)
+ * **IdentityFile** → path to the private key used for passwordless login
 
 ---
 
@@ -102,7 +102,7 @@ PuTTY cannot use OpenSSH private keys directly. Convert them:
 3. Click **Save private key** → choose a name like `control.ppk` in your project folder.
 4. Click **Yes** if it warns about saving without a passphrase.
 
-> Repeat for each VM (`control`, `web01`, `web02`, `db01`).
+Repeat for each VM (`control`, `web01`, `web02`, `db01`).
 
 ---
 
@@ -128,7 +128,7 @@ PuTTY cannot use OpenSSH private keys directly. Convert them:
 | web02   | 2201     | web02.ppk        | web02              |
 | db01    | 2202     | db01.ppk         | db01               |
 
-> **Tip:** Save these sessions in PuTTY for easy access.
+ **Tip:** Save these sessions in PuTTY for easy access.
 
 ---
 
@@ -148,7 +148,7 @@ ping 192.168.56.12  # web02
 ping 192.168.56.13  # db01
 ```
 
-> This simulates **AWS private network** behavior — VMs can communicate internally, but external SSH goes through the control node.
+ This simulates **AWS private network** behavior — VMs can communicate internally, but external SSH goes through the control node.
 
 ---
 
