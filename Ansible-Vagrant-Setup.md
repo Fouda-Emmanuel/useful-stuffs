@@ -1,4 +1,4 @@
-# Ansible Lab Setup Documentation - Complete Beginner's Guide
+# Ansible Lab with Vagrant VMs Setup Documentation 
 
 ## 🎯 Goal: Create a Local Ansible Lab That Mimics Real Cloud Setup
 
@@ -229,7 +229,6 @@ host_key_checking = False
 ```
 
 ### What This Config Does:
-- `inventory = ./inventory` - Use our inventory file automatically
 - `host_key_checking = False` - Skip SSH confirmation prompts
 
 ---
@@ -239,16 +238,16 @@ host_key_checking = False
 ### Final Test Commands:
 ```bash
 # Test individual servers
-ansible web01 -m ping
-ansible web02 -m ping  
-ansible db01 -m ping
+ansible web01 -m ping -i inventory
+ansible web02 -m ping  -i inventory
+ansible db01 -m ping -i inventory
 
 # Test server groups
-ansible webservers -m ping
-ansible dbservers -m ping
+ansible webservers -m ping -i inventory
+ansible dbservers -m ping -i inventory
 
 # Test all servers
-ansible all -m ping
+ansible all -m ping -i inventory
 ```
 
 ### ✅ Expected Success Output:
