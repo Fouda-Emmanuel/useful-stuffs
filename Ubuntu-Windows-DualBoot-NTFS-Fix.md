@@ -1,5 +1,3 @@
----
-
 # Ubuntu & Windows Dual-Boot – NTFS Mount Fix
 
 ## 🛑 Problem
@@ -78,5 +76,3 @@ ls /mnt/windows
 * Never **Sleep** or **Hibernate** Windows before booting Ubuntu.
 * Always use **proper shutdown**.
 * If the partition still won’t mount, boot into Windows and repeat the disk check (`chkdsk /f`).
-
----
