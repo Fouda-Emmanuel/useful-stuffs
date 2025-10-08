@@ -1,6 +1,3 @@
-Here’s the **updated Markdown** without your name, ready to copy:
-
-````markdown
 # Postman UI Fix on Ubuntu (Squares Issue)  
 
 Sometimes, when using Postman installed via **Snap on Ubuntu**, the file picker or other UI dialogs may display **squares (`[][][]`) instead of text**. This issue is caused by a corrupted or outdated **font cache** in Postman’s Snap configuration.  
