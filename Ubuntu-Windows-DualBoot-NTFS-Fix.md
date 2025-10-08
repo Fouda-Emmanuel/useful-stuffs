@@ -5,7 +5,7 @@
 When booting into Ubuntu, you might see this error when accessing Windows files:
 
 ```
-Error mounting /dev/sda2: wrong fs type, bad option, bad superblock...
+Error mounting /dev/sda2: bla bla bla..
 ```
 
 **Cause:**
