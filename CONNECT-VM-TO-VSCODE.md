@@ -1,5 +1,4 @@
 ## VS Code Remote-SSH Setup for Any Linux VM (with Vagrant Appendix)
-````markdown
 
 This guide explains how to connect **VS Code on Windows** (or any host OS) to a **Linux VM** (Ubuntu, CentOS, Debian, etc.) using **Remote-SSH**, including a dedicated section for **Vagrant users**.
 
@@ -238,8 +237,7 @@ Save in default SSH config and connect via Remote-SSH → VS Code will install s
 
 ---
 
-**Author:** Fouda Aime Emmanuel Kalvin (Emma)
-**Date:** 2025-09-03
+
 
 
 
