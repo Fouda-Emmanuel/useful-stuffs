@@ -197,6 +197,23 @@ Move first 4 chars to end: `30004004100000157841Z02FR76`
 
 ### Luhn Algorithm (Python)
 ```python
+def calculate_luhn_check_digit(number: str) -> int:
+    def split_into_digits(n: Union[str, int]) -> List[int]:
+        return [int(digit) for digit in str(n)]
+    
+    digits = split_into_digits(number)
+    to_double_digit = digits[-1::-2] 
+    non_double_digits =digits[-2::-2]
+    total = sum(non_double_digits)
+
+    for d in to_double_digit:
+        doubled = d * 2
+        total += sum(split_into_digits(doubled))
+
+    return (10 - (total % 10)) % 10
+```
+### Or you can try this one
+```python
 def luhn_checksum(number_str):
     total = 0
     reverse_digits = number_str[::-1]
@@ -213,6 +230,7 @@ def luhn_checksum(number_str):
 credit_card = "4111111111111111"
 print(f"Valid: {luhn_checksum(credit_card)}")  # True
 ```
+
 
 ### Modulo 97 Algorithm (Python)
 ```python
