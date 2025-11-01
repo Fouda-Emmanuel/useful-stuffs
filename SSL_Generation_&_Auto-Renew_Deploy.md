@@ -11,7 +11,7 @@
 7. [Nginx Configuration](#nginx-configuration)
 8. [Deployment Script](#deployment-script)
 9. [Lessons Learned](#lessons-learned)
-10.[SSL Certificate Auto-renewal Guide](#ssl-certificate-auto-renewal-guide)
+10. [SSL Certificate Auto-renewal Guide](#ssl-certificate-auto-renewal-guide)
 
 ## Project Overview
 
