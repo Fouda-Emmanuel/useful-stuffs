@@ -142,6 +142,13 @@ exec celery \
   flower \
   --basic_auth="${CELERY_FLOWER_USER}:${CELERY_FLOWER_PASSWORD}"
 ```
+**Check inside a running container Env**
+
+If Flower is running in Docker:
+```bash
+docker exec -it app-flower-1 env | grep CELERY_FLOWER
+```
+* This will show both `CELERY_FLOWER_USER` and `CELERY_FLOWER_PASSWORD` if they are set inside the container.
 
 ### **Issue 3: Monitoring Stack Connectivity**
 
