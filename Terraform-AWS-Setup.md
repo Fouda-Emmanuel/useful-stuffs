@@ -198,10 +198,18 @@ source ~/.bashrc
 ### Verify AWS CLI Configuration
 
 ```bash
-# Test AWS CLI configuration
+# AWS config and credentials for authentication and region:
+ 1. ~/.aws/config       # -> stores default region and output format
+ 2. ~/.aws/credentials  # -> stores your AWS access key and secret key
+
+# Test AWS CLI configuration & verify your identity
+# Returns AWS Account ID, IAM user/role ARN, and UserId
 aws sts get-caller-identity
 
-# List S3 buckets (if you have any)
+# List all EC2 instances in the default region
+aws ec2 describe-instances
+
+# List all S3 buckets in the default region
 aws s3 ls
 ```
 
