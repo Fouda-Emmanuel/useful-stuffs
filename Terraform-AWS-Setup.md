@@ -19,31 +19,40 @@ uname -m
 
 ## 1. Install Terraform
 
-### Method 1: Using apt package manager (Recommended for beginners)
+### Method 1: Using Official HashiCorp Repository (Recommended)
 
 ```bash
-# Update package index
-sudo apt update
+# Update package index and install prerequisites
+sudo apt-get update && sudo apt-get install -y gnupg software-properties-common
 
-# Install prerequisites
-sudo apt install -y curl gnupg software-properties-common
-
-# Add HashiCorp GPG key
+# Install HashiCorp's GPG key
 wget -O- https://apt.releases.hashicorp.com/gpg | \
 gpg --dearmor | \
-sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
+sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null
 
-# Add HashiCorp repository
-echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
-https://apt.releases.hashicorp.com $(lsb_release -cs) main" | \
-sudo tee /etc/apt/sources.list.d/hashicorp.list
+# Verify the GPG key's fingerprint
+gpg --no-default-keyring \
+--keyring /usr/share/keyrings/hashicorp-archive-keyring.gpg \
+--fingerprint
+```
 
-# Update and install Terraform
+**Expected fingerprint output:**
+```
+/usr/share/keyrings/hashicorp-archive-keyring.gpg
+-------------------------------------------------
+pub   rsa4096 XXXX-XX-XX [SC]
+      XXXX XXXX XXXX XXXX XXXX  XXXX XXXX XXXX XXXX XXXX
+uid           [ unknown] HashiCorp Security (HashiCorp Package Signing) <security+packaging@hashicorp.com>
+sub   rsa4096 XXXX-XX-XX [E]
+```
+
+```bash
+# Add the official HashiCorp repository
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+
+# Update package list and install Terraform
 sudo apt update
-sudo apt install terraform
-
-# Verify installation
-terraform --version
+sudo apt-get install terraform
 ```
 
 ### Method 2: Manual installation (Latest version)
@@ -62,9 +71,32 @@ sudo mv terraform /usr/local/bin/
 
 # Clean up
 rm terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+```
 
-# Verify installation
+### Verify the Installation
+
+```bash
+# Verify installation worked
+terraform -help
+
+# Check version
 terraform --version
+```
+
+**Expected help output:**
+```
+Usage: terraform [global options] <subcommand> [args]
+
+The available commands for execution are listed below.
+The primary workflow commands are given first, followed by
+less common or more advanced commands.
+
+Main commands:
+  init          Prepare your working directory for other commands
+  validate      Check whether the configuration is valid
+  plan          Show changes required by the current configuration
+  apply         Create or update infrastructure
+  destroy       Destroy previously-created infrastructure
 ```
 
 ---
@@ -311,30 +343,36 @@ You should see:
 Create a setup script for future use:
 
 ```bash
-# create setup script
+# create setup script with official HashiCorp method
 cat > terraform-setup.sh << 'EOF'
 #!/bin/bash
 
-echo "Starting Terraform and AWS CLI setup..."
+echo "Starting Terraform and AWS CLI setup using official methods..."
 echo "Detecting system architecture..."
 
 # Check architecture
 ARCH=$(uname -m)
 echo "Architecture: $ARCH"
 
-# Update system
-sudo apt update && sudo apt upgrade -y
+# Update system and install prerequisites for Terraform
+sudo apt-get update && sudo apt-get install -y gnupg software-properties-common
 
-# Install Terraform
-sudo apt install -y curl gnupg software-properties-common
+# Install HashiCorp's GPG key
 wget -O- https://apt.releases.hashicorp.com/gpg | \
 gpg --dearmor | \
-sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
-https://apt.releases.hashicorp.com $(lsb_release -cs) main" | \
-sudo tee /etc/apt/sources.list.d/hashicorp.list
+sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null
+
+echo "Verifying GPG key fingerprint..."
+gpg --no-default-keyring \
+--keyring /usr/share/keyrings/hashicorp-archive-keyring.gpg \
+--fingerprint
+
+# Add HashiCorp repository
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+
+# Install Terraform
 sudo apt update
-sudo apt install terraform -y
+sudo apt-get install terraform -y
 
 # Install AWS CLI based on architecture
 if [ "$ARCH" = "x86_64" ]; then
@@ -359,7 +397,7 @@ sudo snap install --classic code
 echo "Setup complete!"
 echo "Please configure AWS CLI using: aws configure"
 echo "Install VS Code extensions manually from marketplace"
-echo "Verify installation with: terraform --version && aws --version"
+echo "Verify installation with: terraform -help && aws --version"
 EOF
 
 # Make script executable
@@ -375,6 +413,13 @@ chmod +x terraform-setup.sh
 **Terraform not found:**
 ```bash
 export PATH=$PATH:/usr/local/bin
+```
+
+**Terraform GPG key verification warning:**
+```bash
+# This warning is normal and expected:
+# "WARNING: This key is not certified with a trusted signature!"
+# It occurs because there isn't a chain of trust between your PGP key and HashiCorp's key
 ```
 
 **AWS CLI authentication errors:**
@@ -448,7 +493,7 @@ alias myarch='uname -m'
 
 Your development environment is now ready for Terraform projects. You have:
 
-- ✅ Terraform installed and configured
+- ✅ Terraform installed and configured using official HashiCorp method
 - ✅ AWS CLI set up with correct architecture
 - ✅ VS Code with essential extensions
 - ✅ Test project verified and working
@@ -471,13 +516,14 @@ lsb_release -a             # Check Ubuntu version
 
 ### Installation Commands
 ```bash
-# Quick Terraform install
-curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
-sudo apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
-sudo apt update && sudo apt install terraform -y
+# Quick Terraform install (Official method)
+sudo apt-get update && sudo apt-get install -y gnupg software-properties-common && \
+wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null && \
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list && \
+sudo apt update && sudo apt-get install terraform -y
 
 # Quick AWS CLI install (x86_64)
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && \
 sudo apt install unzip -y && unzip awscliv2.zip && sudo ./aws/install && rm awscliv2.zip
 
 # Quick VS Code install
@@ -507,7 +553,7 @@ aws configure list              # Show current configuration
 ### Verification Commands
 ```bash
 # Verify complete setup
-terraform --version && aws --version && code --version
+terraform -help && aws --version && code --version
 
 # Verify AWS configuration
 aws sts get-caller-identity
@@ -518,15 +564,27 @@ uname -m && aws --version
 
 ### One-Liner Complete Setup (x86_64)
 ```bash
-sudo apt update && sudo apt install -y curl unzip && curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add - && sudo apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main" && sudo apt update && sudo apt install terraform -y && curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip awscliv2.zip && sudo ./aws/install && rm awscliv2.zip && sudo snap install --classic code && echo "Setup complete! Run 'aws configure' to set up credentials."
+sudo apt-get update && sudo apt-get install -y gnupg software-properties-common curl unzip && \
+wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null && \
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list && \
+sudo apt update && sudo apt-get install terraform -y && \
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip awscliv2.zip && sudo ./aws/install && rm awscliv2.zip && \
+sudo snap install --classic code && \
+echo "Setup complete! Run 'aws configure' to set up credentials."
 ```
 
 ### Quick Test
 ```bash
 # Quick test of entire setup
-mkdir -p /tmp/terraform-test && cd /tmp/terraform-test && echo 'output "test" { value = "Ready!" }' > main.tf && terraform init && terraform plan && aws sts get-caller-identity && echo "✅ All systems go!"
+mkdir -p /tmp/terraform-test && cd /tmp/terraform-test && \
+echo 'terraform { required_providers { aws = { source = "hashicorp/aws" } } }' > main.tf && \
+terraform init && terraform validate && \
+aws sts get-caller-identity && \
+echo "✅ All systems go!"
 ```
 
 **Happy Terraforming! 🚀**
 
 ---
+
+*This documentation follows official HashiCorp installation methods. For updates or issues, please check the GitHub repository or create an issue.*
