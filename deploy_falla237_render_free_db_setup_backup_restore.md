@@ -345,7 +345,7 @@ pg_restore --version
 pg_dump -Fc --no-acl --no-owner "postgresql://USER:PASS@EXTERNAL-HOST:5432/DB_NAME" > falla237_backup_YYYYMM.dump
 
 # ✅ Example with actual EXTERNAL URL
-pg_dump -Fc --no-acl --no-owner "postgresql://falla237_db_user:2FSFuCA793UeI5LQeKl5wVDC1uYvdChh@dpg-d4698i4hg0os73ee4vig-a.oregon-postgres.render.com:5432/falla237_db" > falla237_backup_Nov2025.dump
+pg_dump -Fc --no-acl --no-owner "postgresql://test_db:fsjdaggdfkagdkfagifa@dpg-gidugakjfdbkagdfka-etc" > falla237_backup_Nov2025.dump
 ```
 
 ### Step 3: Verify Backup
