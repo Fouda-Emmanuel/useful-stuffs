@@ -30,7 +30,7 @@ This setup will cost **~$70-100/month** if left running:
 ## 🛠️ **Prerequisites Checklist**
 Before you begin, you need:
 
-1. **AWS Account** ([Create one here](https://portal.aws.amazon.com/billing/signup))
+1. **AWS Account**
 2. **Web browser** (Chrome/Firefox recommended)
 3. **Basic terminal knowledge** (know how to copy/paste commands)
 4. **30 minutes of focused time**
@@ -69,7 +69,7 @@ my-eks-cluster/
 Think of VPC as your **private data center** inside AWS. It's where all your servers will live, isolated from others.
 
 ### **📝 Steps:**
-1. **Open** [AWS VPC Console](https://console.aws.amazon.com/vpc/)
+1. **Open** AWS VPC Console
 2. Click **"Create VPC"** (orange button)
 3. Choose **"VPC and more"** (easier for beginners)
 4. Fill this exactly:
@@ -112,7 +112,7 @@ The bastion is your **secure entry point**. It's the only server with public int
 ### **📝 Steps:**
 
 #### **2.1 Create Security Group (Firewall Rules)**
-1. Go to [EC2 Security Groups](https://console.aws.amazon.com/ec2/#SecurityGroups)
+1. Go to EC2 Security Groups
 2. Click **"Create security group"**
 3. Fill:
    - **Security group name:** `bastion-sg`
@@ -126,7 +126,7 @@ The bastion is your **secure entry point**. It's the only server with public int
 6. Click **"Create security group"**
 
 #### **2.2 Launch Bastion EC2 Instance**
-1. Go to [EC2 Console](https://console.aws.amazon.com/ec2/)
+1. Go to [EC2 Console]
 2. Click **"Launch instance"**
 3. **Name:** `eks-bastion`
 4. **Application and OS Images:**
@@ -268,7 +268,7 @@ AWS needs permission to manage your cluster. Think of IAM roles as **security ba
 ### **📝 Steps:**
 
 #### **3.1 Create Role for EKS Cluster**
-1. Go to [IAM Roles Console](https://console.aws.amazon.com/iam/#/roles)
+1. Go to [IAM Roles Console]
 2. Click **"Create role"**
 3. **Trusted entity type:** AWS service
 4. **Use case:** Search for `EKS` → Select **"EKS - Cluster"**
@@ -304,7 +304,7 @@ Go to IAM → Roles → You should see both roles created
 This creates the **Kubernetes control plane** - the brain that manages everything. AWS manages this for you.
 
 ### **📝 Steps:**
-1. Go to [EKS Console](https://console.aws.amazon.com/eks/)
+1. Go to EKS Console
 2. Click **"Add cluster"** → **"Create"**
 
 3. **Configure cluster:**
@@ -954,9 +954,7 @@ kubectl rollout history deployment/nginx
 | Resource | Link | Purpose |
 |----------|------|---------|
 | **Kubernetes Docs** | [kubernetes.io](https://kubernetes.io/docs) | Official documentation |
-| **EKS Workshop** | [eksworkshop.com](https://www.eksworkshop.com) | Hands-on tutorials |
 | **kubectl Cheatsheet** | [kubernetes.io/docs/reference/kubectl/cheatsheet](https://kubernetes.io/docs/reference/kubectl/cheatsheet/) | Command reference |
-| **AWS EKS Docs** | [docs.aws.amazon.com/eks](https://docs.aws.amazon.com/eks/) | AWS-specific guides |
 | **Play with Kubernetes** | [labs.play-with-k8s.com](https://labs.play-with-k8s.com) | Free practice environment |
 
 ### **📞 Need Help?**
@@ -1022,14 +1020,6 @@ You're ready for your next challenge when you can:
 - Troubleshoot a "Pod pending" issue
 - Explain VPC networking to a colleague
 - Deploy a custom application from Docker Hub
-
----
-
-## **📬 Stay Updated**
-Cloud technologies evolve rapidly. Bookmark these:
-- [AWS What's New](https://aws.amazon.com/new/)
-- [Kubernetes Blog](https://kubernetes.io/blog/)
-- [EKS Release Notes](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html)
 
 ---
 
