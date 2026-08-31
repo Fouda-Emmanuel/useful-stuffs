@@ -144,7 +144,7 @@ cd stable/aws-load-balancer-controller
 **Install using the local chart:**
 ```bash
 helm install aws-load-balancer-controller \
-  . \
+  . \ or ./eks-charts/stable/aws-load-balancer-controller \
   -n kube-system \
   --set clusterName=YOUR_CLUSTER_NAME \
   --set region=YOUR_AWS_REGION \
