@@ -60,7 +60,7 @@ echo "--- systemd cgroup ---"
 grep 'SystemdCgroup' /etc/containerd/config.toml
 
 echo "--- sandbox image ---"
-grep 'sandbox_image' /etc/containerd/config.toml
+grep -i pause /etc/containerd/config.toml
 
 echo "--- service status ---"
 systemctl is-active containerd
