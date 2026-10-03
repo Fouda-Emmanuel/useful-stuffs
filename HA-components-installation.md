@@ -1,12 +1,13 @@
-# Kubernetes Node Setup — containerd + kubeadm/kubelet + kubectl (Bastion)
+# Kubernetes Node Setup — containerd + kubeadm/kubelet + crictl + kubectl (Bastion)
 
 A reproducible, version-pinned installation guide for preparing:
 
-- **Ubuntu 24.04 (Noble) Kubernetes nodes** — containerd, kubelet, kubeadm
+- **Ubuntu 24.04 (Noble) Kubernetes nodes** — containerd, crictl, kubelet, kubeadm
 - **An Ubuntu 24.04 bastion host** — kubectl only
 
 - **OS:** Ubuntu 24.04 LTS (Noble Numbat), amd64
 - **Container runtime:** `containerd.io` **2.2.6**
+- **cri-tools:** `crictl` **v1.35.0**
 - **Kubernetes:** **v1.35** (`kubeadm` + `kubelet` + `kubectl` **1.35.8-1.1**)
 - **Cgroup driver:** `systemd`
 
@@ -21,13 +22,17 @@ A reproducible, version-pinned installation guide for preparing:
 5. [Checking Available Repository Versions](#checking-available-repository-versions)
    - [containerd.io versions](#containerdio-versions)
    - [kubeadm / kubelet / kubectl versions](#kubeadm--kubelet--kubectl-versions)
+   - [crictl versions](#crictl-versions)
 6. [Step 1 — Install & Configure containerd (nodes only)](#step-1--install--configure-containerd-nodes-only)
-7. [Step 2 — Install kubeadm & kubelet (nodes only)](#step-2--install-kubeadm--kubelet-nodes-only)
-8. [Step 3 — Install kubectl (bastion only)](#step-3--install-kubectl-bastion-only)
-9. [Verification](#verification)
-10. [What This Setup Does NOT Do](#what-this-setup-does-not-do)
-11. [Next Steps](#next-steps)
-12. [Notes & Caveats](#notes--caveats)
+7. [Step 2 — Install crictl (nodes only)](#step-2--install-crictl-nodes-only)
+8. [Step 3 — Verify CRI is Exposed by containerd (nodes only)](#step-3--verify-cri-is-exposed-by-containerd-nodes-only)
+9. [Step 4 — Install kubeadm & kubelet (nodes only)](#step-4--install-kubeadm--kubelet-nodes-only)
+10. [Step 5 — Install kubectl (bastion only)](#step-5--install-kubectl-bastion-only)
+11. [Verification](#verification)
+12. [What This Setup Does NOT Do](#what-this-setup-does-not-do)
+13. [Next Steps](#next-steps)
+14. [Troubleshooting: `crictl info` fails or `grpc.v1.cri` missing](#troubleshooting-crictl-info-fails-or-grpcv1cri-missing)
+15. [Notes & Caveats](#notes--caveats)
 
 ---
 
@@ -38,13 +43,14 @@ This repository documents the exact steps required to turn a fresh Ubuntu 24.04 
 - a **Kubernetes node** (control plane or worker), or
 - a **bastion / admin host** that only talks to the cluster API.
 
-Three scripts are provided:
+Four scripts are provided:
 
 | Script | Target | Purpose |
 |--------|--------|---------|
 | `install-containerd.sh` | K8s nodes | Installs and configures containerd 2.2.6 as the CRI runtime |
+| `install-crictl.sh`     | K8s nodes | Installs `crictl` v1.35.0 and points it at containerd |
 | `install-kube-tools.sh` | K8s nodes | Installs `kubeadm` and `kubelet` at a pinned version |
-| `install-kubectl.sh`   | Bastion   | Installs `kubectl` only at a pinned version |
+| `install-kubectl.sh`    | Bastion   | Installs `kubectl` only at a pinned version |
 
 All scripts use **version pinning** and **`apt-mark hold`** so a cluster does not accidentally break from an unattended upgrade.
 
@@ -75,6 +81,7 @@ All scripts use **version pinning** and **`apt-mark hold`** so a cluster does no
          kubeadm       kubeadm       kubeadm
          kubelet       kubelet       kubelet
          containerd    containerd    containerd
+         crictl        crictl        crictl
              │            │            │
              └────────────┼────────────┘
                           │
@@ -83,20 +90,20 @@ All scripts use **version pinning** and **`apt-mark hold`** so a cluster does no
                  worker1     worker2
 ```
 
-The bastion is an **administrative access point**, not a Kubernetes node. It does not run `containerd`, `kubelet`, or `kubeadm` — only `kubectl`.
+The bastion is an **administrative access point**, not a Kubernetes node. It does not run `containerd`, `kubelet`, `kubeadm`, or `crictl` — only `kubectl`.
 
 ---
 
 ## Role Matrix
 
-| Node    | containerd | kubelet | kubeadm | kubectl |
-|---------|:----------:|:-------:|:-------:|:-------:|
-| cp01    | ✅         | 1.35.8  | 1.35.8  | —       |
-| cp02    | ✅         | 1.35.8  | 1.35.8  | —       |
-| cp03    | ✅         | 1.35.8  | 1.35.8  | —       |
-| worker1 | ✅         | 1.35.8  | 1.35.8  | —       |
-| worker2 | ✅         | 1.35.8  | 1.35.8  | —       |
-| bastion | —          | —       | —       | 1.35.8  |
+| Node    | containerd | crictl  | kubelet | kubeadm | kubectl |
+|---------|:----------:|:-------:|:-------:|:-------:|:-------:|
+| cp01    | ✅ 2.2.6   | 1.35.0  | 1.35.8  | 1.35.8  | —       |
+| cp02    | ✅ 2.2.6   | 1.35.0  | 1.35.8  | 1.35.8  | —       |
+| cp03    | ✅ 2.2.6   | 1.35.0  | 1.35.8  | 1.35.8  | —       |
+| worker1 | ✅ 2.2.6   | 1.35.0  | 1.35.8  | 1.35.8  | —       |
+| worker2 | ✅ 2.2.6   | 1.35.0  | 1.35.8  | 1.35.8  | —       |
+| bastion | —          | —       | —       | —       | 1.35.8  |
 
 ---
 
@@ -104,7 +111,7 @@ The bastion is an **administrative access point**, not a Kubernetes node. It doe
 
 - Ubuntu 24.04 (Noble) on `amd64`
 - `sudo` privileges
-- Internet access to `download.docker.com` and `pkgs.k8s.io`
+- Internet access to `download.docker.com`, `pkgs.k8s.io`, and `github.com`
 - (Recommended for cluster nodes)
   - Swap disabled
   - Unique hostname, MAC address, and `product_uuid` per node
@@ -308,6 +315,83 @@ Kustomize Version: v5.x.x
 
 > **Tip:** the `GitVersion` field is the authoritative upstream version (e.g. `v1.35.8`), while the deb version adds `-1.1`.
 
+---
+
+### crictl versions
+
+**Source:** `github.com/kubernetes-sigs/cri-tools/releases`
+
+Unlike containerd/kubeadm, `crictl` is **not distributed via APT** — it is a static Go binary shipped as a tarball on GitHub Releases. There is no `apt-cache madison` equivalent; instead, query the GitHub API.
+
+**List every published `cri-tools` release (tag names):**
+
+```bash
+curl -fsSL https://api.github.com/repos/kubernetes-sigs/cri-tools/releases \
+  | grep '"tag_name"' \
+  | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/'
+```
+
+Example output (changes over time):
+
+```
+v1.35.0
+v1.34.0
+v1.33.0
+v1.32.0
+...
+v1.24.2
+```
+
+**Check whether a specific version exists** (useful before pinning):
+
+```bash
+CRICTL_VERSION="v1.35.0"
+curl -fsSI \
+  "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-amd64.tar.gz" \
+  | head -n 1
+```
+
+Expected:
+
+```
+HTTP/2 302
+```
+
+(A `302` redirect to the CDN means the artifact exists; a `404` means the version or arch does not.)
+
+**What the version string means:**
+
+```
+v1.35.0
+│ │  │
+│ │  └── PATCH — cri-tools patch
+│ └───── MINOR — matches the Kubernetes minor line (1.35)
+└─────── MAJOR
+```
+
+> **Alignment rule:** `crictl` minor **matches the Kubernetes minor** (e.g. `crictl v1.35.x` for a `v1.35` cluster). Patch versions of `crictl` are decoupled from Kubernetes patch versions.
+
+**Check what is actually installed:**
+
+```bash
+crictl --version
+```
+
+Example:
+
+```
+crictl version v1.35.0
+```
+
+**List what is available locally (mirror of the runtime):**
+
+```bash
+sudo crictl images
+sudo crictl pods
+```
+
+---
+
 ### Why pin instead of using the latest?
 
 ```
@@ -432,7 +516,200 @@ echo "=== containerd installation complete ==="
 
 ---
 
-## Step 2 — Install kubeadm & kubelet (nodes only)
+## Step 2 — Install crictl (nodes only)
+
+> **Applies to:** cp01, cp02, cp03, worker1, worker2
+> **Not applicable to:** bastion
+
+`crictl` is a CLI for talking directly to the CRI socket. It is invaluable for debugging pod sandboxes, pulling images, and inspecting the runtime **without** going through the Kubernetes API. It is a static binary, so no APT repository is needed.
+
+### Script: `install-crictl.sh`
+
+```bash
+#!/bin/bash
+set -e
+
+CRICTL_VERSION="v1.35.0"
+
+echo "=========================================="
+echo " Installing crictl ${CRICTL_VERSION}"
+echo "=========================================="
+
+# --------------------------------------------------
+# 1. Download crictl
+# --------------------------------------------------
+
+curl -LO \
+  https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-amd64.tar.gz
+
+# --------------------------------------------------
+# 2. Install crictl
+# --------------------------------------------------
+
+sudo tar zxvf \
+  crictl-${CRICTL_VERSION}-linux-amd64.tar.gz \
+  -C /usr/local/bin
+
+# --------------------------------------------------
+# 3. Remove downloaded archive
+# --------------------------------------------------
+
+rm -f crictl-${CRICTL_VERSION}-linux-amd64.tar.gz
+
+# --------------------------------------------------
+# 4. Configure crictl to use containerd
+# --------------------------------------------------
+
+sudo tee /etc/crictl.yaml > /dev/null <<'EOF'
+runtime-endpoint: unix:///run/containerd/containerd.sock
+image-endpoint: unix:///run/containerd/containerd.sock
+timeout: 10
+debug: false
+EOF
+
+# --------------------------------------------------
+# 5. Verification
+# --------------------------------------------------
+
+echo
+echo "========== crictl version =========="
+
+crictl --version
+
+echo
+echo "========== crictl configuration =========="
+
+sudo cat /etc/crictl.yaml
+
+echo
+echo "========== containerd CRI test =========="
+
+sudo crictl info > /dev/null
+
+echo "crictl can communicate with containerd successfully."
+
+echo
+echo "========== Images =========="
+
+sudo crictl images
+
+echo
+echo "=========================================="
+echo " crictl ${CRICTL_VERSION} installed."
+echo "=========================================="
+```
+
+### Step-by-Step Breakdown
+
+| Step | Action | Purpose |
+|------|--------|---------|
+| 1 | Download `crictl-v1.35.0-linux-amd64.tar.gz` from GitHub Releases | Source for the static binary |
+| 2 | Extract to `/usr/local/bin` | Places `crictl` on `$PATH` |
+| 3 | Remove the tarball | Clean up |
+| 4 | Write `/etc/crictl.yaml` pointing at containerd's socket | Tells `crictl` which runtime to talk to |
+| 5 | Print version, config, run `crictl info`, list images | Confirm the install |
+
+### Why `/etc/crictl.yaml`?
+
+`crictl` supports many runtimes. Without a config it tries to auto-detect a socket — which is fragile in scripts. Pinning the endpoints makes the tool deterministic:
+
+```yaml
+runtime-endpoint: unix:///run/containerd/containerd.sock
+image-endpoint:   unix:///run/containerd/containerd.sock
+timeout: 10
+debug: false
+```
+
+Both endpoints are the same because containerd exposes both `RuntimeService` and `ImageService` over the same gRPC socket.
+
+---
+
+## Step 3 — Verify CRI is Exposed by containerd (nodes only)
+
+> **Applies to:** cp01, cp02, cp03, worker1, worker2
+> **Do this BEFORE moving on to kubeadm/kubelet.**
+
+### Why this step exists
+
+In containerd **2.x**, the CRI plugin is split internally into:
+
+- `io.containerd.cri.v1.images` — image service
+- `io.containerd.cri.v1.runtime` — runtime service (sandboxes, containers)
+
+…and the **gRPC service that exposes them to `crictl` / kubelet** is:
+
+- `io.containerd.grpc.v1.cri`
+
+All three must be listed as **`ok`** in `ctr plugins ls` for `crictl` (and later, kubelet) to work.
+
+A **restart of containerd is required** after changing `/etc/containerd/config.toml` — plugins are only loaded at process start, not on config reload.
+
+### Commands
+
+```bash
+# 1. Ensure containerd has actually reloaded the current config
+sudo systemctl restart containerd
+sudo systemctl is-active containerd   # → active
+
+# 2. Check that ALL CRI-related plugins are loaded
+sudo ctr plugins ls | grep -E 'cri|grpc'
+```
+
+### Expected output (all three CRI lines must be `ok`)
+
+```text
+io.containerd.cri.v1     images    -              ok
+io.containerd.cri.v1     runtime   linux/amd64    ok
+io.containerd.grpc.v1    cri       -              ok
+```
+
+If the **third line (`io.containerd.grpc.v1.cri`) is missing**, `crictl` will fail with:
+
+```
+cni plugin not initialized
+```
+
+…or the socket will not respond to `RuntimeService` calls at all. See the [Troubleshooting](#troubleshooting-crictl-info-fails-or-grpcv1cri-missing) section below.
+
+### Confirm with `crictl info`
+
+```bash
+sudo crictl info
+```
+
+A healthy output looks like (abbreviated):
+
+```json
+{
+  "status": {
+    "conditions": [
+      { "type": "RuntimeReady", "status": true },
+      { "type": "NetworkReady", "status": false,
+        "reason": "NetworkPluginNotReady",
+        "message": "Network plugin returns error: cni plugin not initialized" }
+    ]
+  }
+}
+```
+
+- **`RuntimeReady: true`** — containerd's CRI gRPC service is up. ✅
+- **`NetworkReady: false`** — **expected** at this stage; no CNI is installed yet. This will flip to `true` after Cilium/Calico/Flannel is deployed post-`kubeadm init`.
+
+Also confirm the config file contains the gRPC CRI section:
+
+```bash
+sudo grep -nE '^\[plugins|grpc\.v1\.cri|cri\.v1' /etc/containerd/config.toml
+```
+
+Expected key line:
+
+```toml
+[plugins.'io.containerd.grpc.v1.cri']
+```
+
+---
+
+## Step 4 — Install kubeadm & kubelet (nodes only)
 
 > **Applies to:** cp01, cp02, cp03, worker1, worker2
 > **Not applicable to:** bastion
@@ -561,7 +838,7 @@ Starting it manually before those steps only produces confusing error logs. `kub
 
 ---
 
-## Step 3 — Install kubectl (bastion only)
+## Step 5 — Install kubectl (bastion only)
 
 > **Applies to:** bastion
 > **Not applicable to:** any Kubernetes node
@@ -703,6 +980,14 @@ sandbox_image = "registry.k8s.io/pause:3.10"
 --- service status ---
 active
 
+--- crictl version ---
+crictl version v1.35.0
+
+--- CRI plugins ---
+io.containerd.cri.v1     images    -              ok
+io.containerd.cri.v1     runtime   linux/amd64    ok
+io.containerd.grpc.v1    cri       -              ok
+
 --- kubeadm version ---
 kubeadm version: &version.Info{Major:"1", Minor:"35", GitVersion:"v1.35.8", ...}
 
@@ -740,6 +1025,12 @@ grep SystemdCgroup /etc/containerd/config.toml
 grep -i pause     /etc/containerd/config.toml
 systemctl is-active containerd
 
+# CRI + crictl (nodes only)
+ctr plugins ls | grep -E 'cri|grpc'
+crictl --version
+sudo crictl info
+sudo crictl images
+
 # Kubernetes tools (nodes only)
 kubeadm version
 kubelet --version
@@ -759,9 +1050,11 @@ A quick one-liner to capture every relevant version on any host:
 {
   echo "=== OS ===";           lsb_release -d
   echo "=== containerd ===";   containerd --version 2>/dev/null || echo "not installed"
+  echo "=== crictl ===";       crictl --version 2>/dev/null || echo "not installed"
   echo "=== kubeadm ===";      kubeadm version -o short 2>/dev/null || echo "not installed"
   echo "=== kubelet ===";      kubelet --version 2>/dev/null || echo "not installed"
   echo "=== kubectl ===";      kubectl version --client -o yaml 2>/dev/null | grep gitVersion || echo "not installed"
+  echo "=== CRI plugins ===";  ctr plugins ls 2>/dev/null | grep -E 'cri|grpc' || true
   echo "=== held ===";         apt-mark showhold
 } | tee versions-$(hostname).txt
 ```
@@ -851,17 +1144,132 @@ These items are intentionally **out of scope** and must be handled separately:
 
 ---
 
+## Troubleshooting: `crictl info` fails or `grpc.v1.cri` missing
+
+This is the single most common post-install issue with containerd 2.x. Symptom:
+
+```text
+$ sudo crictl info
+FATA[0000] validate service connection: CRI v1 runtime API is not implemented for endpoint "unix:///run/containerd/containerd.sock":
+rpc error: code = Unimplemented desc = unknown service runtime.v1.RuntimeService
+```
+
+…or the plugin is simply absent from `ctr plugins ls`:
+
+```text
+$ sudo ctr plugins ls | grep -E 'cri|grpc'
+io.containerd.cri.v1     images    -              ok
+io.containerd.cri.v1     runtime   linux/amd64    ok
+# <-- io.containerd.grpc.v1  cri  ...  IS MISSING
+```
+
+### Root cause
+
+In containerd **2.x**, `/etc/containerd/config.toml` **must** contain:
+
+```toml
+[plugins.'io.containerd.grpc.v1.cri']
+  stream_server_address = '127.0.0.1'
+  ...
+```
+
+If the config file is correct **but the running process was started before the file was fixed**, the plugin will not load. containerd reads its plugins **once at process start** — it does not hot-reload `config.toml`.
+
+### Fix (safe during node prep)
+
+```bash
+# 1. Reload the currently-installed config into the running process
+sudo systemctl restart containerd
+
+# 2. Verify the service is up
+sudo systemctl is-active containerd
+# → active
+
+# 3. Confirm all three CRI plugins are present
+sudo ctr plugins ls | grep -E 'cri|grpc'
+```
+
+Expected — **three** lines, all `ok`:
+
+```text
+io.containerd.cri.v1     images    -              ok
+io.containerd.cri.v1     runtime   linux/amd64    ok
+io.containerd.grpc.v1    cri       -              ok
+```
+
+### Confirm with crictl
+
+```bash
+sudo crictl info
+```
+
+Healthy:
+
+```json
+"status": {
+  "conditions": [
+    { "type": "RuntimeReady",             "status": true  },
+    { "type": "NetworkReady",             "status": false,
+      "reason": "NetworkPluginNotReady",
+      "message": "Network plugin returns error: cni plugin not initialized" }
+  ]
+}
+```
+
+- `RuntimeReady: true` → ✅ the CRI gRPC service is running.
+- `NetworkReady: false` → **expected** until a CNI plugin is installed after `kubeadm init`.
+
+### Why this is safe now
+
+We are still in the **node preparation phase** — no Kubernetes workloads are running yet. Restarting containerd at this point has no impact on a live cluster. This is exactly why `crictl` is tested **before** `kubeadm init`: so misconfigurations are caught while the blast radius is zero.
+
+> **Production warning:** once a node is part of a running cluster, restarting containerd will briefly disrupt running pods on that node. Drain the node first (`kubectl drain <node> --ignore-daemonsets`) or tolerate the momentary disruption.
+
+### If the plugin is still missing after a restart
+
+Check the config file itself:
+
+```bash
+sudo grep -nE '^\[plugins|grpc\.v1\.cri' /etc/containerd/config.toml
+```
+
+If `[plugins.'io.containerd.grpc.v1.cri']` is absent, the config was generated by an older containerd (1.x). Regenerate it with the installed binary:
+
+```bash
+containerd config default | sudo tee /etc/containerd/config.toml > /dev/null
+
+# Re-apply our two required edits:
+sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+sudo sed -i 's#sandbox_image = ".*"#sandbox_image = "registry.k8s.io/pause:3.10"#' /etc/containerd/config.toml
+
+sudo systemctl restart containerd
+```
+
+Also check that the CRI plugin is not disabled:
+
+```bash
+grep disabled_plugins /etc/containerd/config.toml
+# Expected: disabled_plugins = []
+```
+
+If `cri` appears in `disabled_plugins`, remove it and restart.
+
+---
+
 ## Notes & Caveats
 
-- **Architecture is hardcoded to `amd64`.** For arm64, change the containerd repo line to `arch=arm64`.
+- **Architecture is hardcoded to `amd64`.** For arm64, change the containerd repo line to `arch=arm64` and download `crictl-${VERSION}-linux-arm64.tar.gz`.
 - **Ubuntu 24.04 / Noble only.** Different Ubuntu releases require a different repo suite (`jammy`, `focal`, etc.).
 - **`apt-mark hold` is intentional.** To upgrade later, `apt-mark unhold`, install the new pin, and re-hold.
-- **Idempotency.** The Kubernetes scripts wipe and re-add their repo each run. The containerd script is not fully idempotent (`apt-mark hold` will simply report "already held").
+- **`crictl` is not held by apt.** It is a static binary in `/usr/local/bin`. Version upgrades are manual — download the new tarball.
+- **`crictl` minor version should match the Kubernetes minor** (here, `v1.35.x` ↔ K8s `v1.35.x`).
+- **Containerd restarts are required after config changes.** The daemon does not hot-reload `config.toml`; only `systemctl restart containerd` (or `SIGHUP` with some builds) picks up changes.
+- **Idempotency.** The Kubernetes scripts wipe and re-add their repo each run. The containerd script is not fully idempotent (`apt-mark hold` will simply report "already held"). The crictl script will overwrite `/usr/local/bin/crictl` and `/etc/crictl.yaml`.
 - **`set -e`** is enabled in all scripts — any failing command aborts the script. Read the output carefully if something stops early.
 - **Matching versions matters.** `kubeadm`, `kubelet`, and `kubectl` should all be the **same minor version** (here `1.35.x`), and never more than one minor ahead/behind the control plane.
 - **Do not start `kubelet` manually** before `kubeadm init` or `kubeadm join`. It is enabled for boot, but `kubeadm` orchestrates its first real start.
-- **Bastion is not a node.** Do not install `containerd`, `kubelet`, or `kubeadm` there. `kubectl` is sufficient and preferred for a hardened admin host.
-- **Repositories change over time.** Always confirm with `apt-cache madison` / `apt-cache policy` that your pinned version still exists before running the scripts in a new environment.
+- **Bastion is not a node.** Do not install `containerd`, `crictl`, `kubelet`, or `kubeadm` there. `kubectl` is sufficient and preferred for a hardened admin host.
+- **Repositories change over time.** Always confirm with `apt-cache madison` / `apt-cache policy` / GitHub API that your pinned version still exists before running the scripts in a new environment.
 
 ---
 
@@ -871,17 +1279,25 @@ These items are intentionally **out of scope** and must be handled separately:
 .
 ├── README.md                  # this document
 ├── install-containerd.sh      # Step 1 — K8s nodes
-├── install-kube-tools.sh      # Step 2 — K8s nodes
-└── install-kubectl.sh         # Step 3 — bastion
+├── install-crictl.sh          # Step 2 — K8s nodes
+├── install-kube-tools.sh      # Step 4 — K8s nodes
+└── install-kubectl.sh         # Step 5 — bastion
 ```
 
 Run the appropriate scripts on each host:
 
-### On Kubernetes nodes
+### On Kubernetes nodes (in order)
 
 ```bash
-chmod +x install-containerd.sh install-kube-tools.sh
+chmod +x install-containerd.sh install-crictl.sh install-kube-tools.sh
 ./install-containerd.sh
+./install-crictl.sh
+
+# Verify CRI before proceeding (Step 3)
+sudo systemctl restart containerd
+sudo ctr plugins ls | grep -E 'cri|grpc'
+sudo crictl info
+
 ./install-kube-tools.sh
 ```
 
