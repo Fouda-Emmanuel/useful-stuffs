@@ -108,7 +108,7 @@ cp01.faekcorp.lab    10.70.21.6
 cp02.faekcorp.lab    10.70.31.209
 cp03.faekcorp.lab    10.70.41.250
 worker1.faekcorp.lab 10.70.61.85
-worker2.faekcorp.lab 10.70.61.86
+worker2.faekcorp.lab 10.70.11.67
 ```
 
 ---
@@ -155,7 +155,7 @@ worker2.faekcorp.lab 10.70.61.86
                     ┌─────────────┴─────────────┐
                     │                           │
                  worker1                     worker2
-              10.70.61.85                 10.70.61.86
+              10.70.61.85                 10.70.11.67
                     │                           │
                     └─────────────┬─────────────┘
                                   │
@@ -1570,7 +1570,7 @@ The final dataplane is now:
         ┌────────┴────────┐
         |                 |
      worker1           worker2
-   10.70.61.85       10.70.61.86
+   10.70.61.85       10.70.11.67
 ```
 
 There is now:
@@ -2021,7 +2021,7 @@ Our desired final cluster becomes:
                 |                     |
                 v                     v
              worker1               worker2
-            10.70.61.85            10.70.61.86
+            10.70.61.85            10.70.11.67
 ```
 
 And Kubernetes should report:
@@ -3124,7 +3124,7 @@ The final Kubernetes networking architecture is:
                   ┌────────┴────────┐
                   |                 |
                worker1           worker2
-             10.70.61.85       10.70.61.86
+             10.70.61.85       10.70.11.67
 ```
 
 Final Cilium configuration:
