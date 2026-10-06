@@ -1,31 +1,73 @@
-# Kubernetes etcd Backup Setup — Complete Runbook
+# Kubernetes etcd Backup Setup & S3 Upload — Complete Runbook
 
-A hands-on, step-by-step guide to backing up an etcd cluster on a kubeadm-based Kubernetes cluster. Written from real experiments on a 3-control-plane HA cluster (Kubernetes 1.35.8, etcd 3.6.6).
+A hands-on, step-by-step guide for backing up an etcd cluster on a kubeadm-based Kubernetes cluster, verifying the snapshot, and uploading it to S3 using an IAM role.
+
+Written from real experiments on a 3-control-plane HA cluster:
+- **Kubernetes:** v1.35.8
+- **etcd:** 3.6.6 (image `registry.k8s.io/etcd:3.6.6-0`)
+- **Cluster name:** faekcorp-lab
+- **Nodes:** cp01, cp02, cp03 (stacked etcd) + worker nodes
+- **Load balancer:** HAProxy at `haproxy.faekcorp.lab:6443`
+- **Bastion:** kubectl-only admin host
+- **S3 bucket:** `ha-cluster-s3-etcd-lab` (us-east-1)
 
 ---
 
 ## Table of Contents
 
-1. [Why etcd Backup Matters](#1-why-etcd-backup-matters)
-2. [The Architecture We're Working With](#2-the-architecture-were-working-with)
-3. [Where to Install etcdctl / etcdutl](#3-where-to-install-etcdctl--etcdutl)
-4. [Understanding `/var/lib/etcd/`](#4-understanding-varlibetcd)
-5. [Step 1 — Install etcdctl and etcdutl](#5-step-1--install-etcdctl-and-etcdutl)
-6. [Step 2 — Validate the etcd Cluster](#6-step-2--validate-the-etcd-cluster)
-7. [Step 3 — Create the Snapshot](#7-step-3--create-the-snapshot)
-8. [Step 4 — Verify the Snapshot File](#8-step-4--verify-the-snapshot-file)
-9. [Step 5 — Verify Snapshot Integrity](#9-step-5--verify-snapshot-integrity)
-10. [Step 6 — Copy the Snapshot Off the Node](#10-step-6--copy-the-snapshot-off-the-node)
-11. [Upload to S3 with IAM Role](#11-upload-to-s3-with-iam-role)
-12. [Snapshot Naming and Retention](#12-snapshot-naming-and-retention)
-13. [Production Considerations](#13-production-considerations)
-14. [Complete Command Reference](#14-complete-command-reference)
+**Part 1 — Why etcd Backup Matters**
+1. The mental model
+2. HA is not backup
+3. What the backup contains (and what it doesn't)
+
+**Part 2 — The Architecture We're Working With**
+4. Cluster topology
+5. Where the tools and data live
+
+**Part 3 — Understanding `/var/lib/etcd/`**
+6. The three-layer model
+7. WAL, snapshots, and the live database
+8. The three different "snapshots" you'll encounter
+
+**Part 4 — Where to Install the Tools**
+9. Bastion vs control-plane: the decision
+10. Installing etcdctl and etcdutl on cp01
+
+**Part 5 — Creating and Verifying the Snapshot**
+11. Step 1 — Validate the etcd cluster
+12. Step 2 — Take the snapshot
+13. Step 3 — Verify file presence
+14. Step 4 — Verify snapshot integrity
+15. Step 5 — Copy off the node
+16. Snapshot naming and retention
+
+**Part 6 — Uploading to S3 with IAM Role**
+17. Why IAM roles, not static keys
+18. The two identities: you vs the instance
+19. What goes where
+20. Console setup steps
+21. CLI alternative
+22. Installing AWS CLI on cp01 (no configuration needed)
+23. Verifying the role works
+24. The upload
+
+**Part 7 — Production Considerations**
+25. Automation and scheduling
+26. Least-privilege IAM policy
+27. Retention and lifecycle
+28. Monitoring and alerting
+29. What's not covered
+
+**Part 8 — Reference**
+30. Complete command reference
+31. Key paths
+32. Summary — the whole flow at a glance
 
 ---
 
-## 1. Why etcd Backup Matters
+# Part 1 — Why etcd Backup Matters
 
-### The mental model
+## 1. The Mental Model
 
 etcd is the **single source of truth** for your entire Kubernetes cluster. Every object — Namespaces, Deployments, Services, Secrets, ConfigMaps, RBAC rules, Nodes, Leases, CRDs — lives in etcd as a key-value pair.
 
@@ -47,7 +89,7 @@ If etcd is lost or corrupted:
 - Worker nodes only run what they're told — they cannot reconstruct state
 - Every YAML applied over months is gone
 
-### HA is not backup
+## 2. HA Is Not Backup
 
 This is the single most important distinction.
 
@@ -77,16 +119,36 @@ This is the single most important distinction.
 
 **Backups live outside the cluster. That's the only way to recover from data loss.**
 
+## 3. What the Backup Contains (and What It Doesn't)
+
+**Contains:**
+
+- Every Namespace, Pod, Deployment, Service, ConfigMap, Secret
+- ServiceAccounts, Roles, RoleBindings, ClusterRoles, ClusterRoleBindings
+- CRDs and their instances
+- Nodes, Leases, Events (recent)
+- Anything else stored as a Kubernetes object
+
+**Does NOT contain:**
+
+- Container images
+- Application data on PersistentVolumes (databases, file uploads)
+- Cloud provider resources (ELBs, EBS volumes, S3 buckets)
+- External systems (DNS, certificate managers)
+- etcd PKI certificates themselves
+
+You need **separate backup strategies** for each of those.
+
 ---
 
-## 2. The Architecture We're Working With
+# Part 2 — The Architecture We're Working With
 
-Our cluster:
+## 4. Cluster Topology
 
 ```
                     ┌──────────────────┐
                     │     Bastion      │
-                    │  kubectl / aws   │
+                    │  kubectl only    │
                     └────────┬─────────┘
                              │ :6443
                              ▼
@@ -107,57 +169,63 @@ Our cluster:
 ```
 
 Key facts:
+
 - **3 control-plane nodes** with **stacked etcd** (etcd runs on the same nodes)
 - etcd runs as a **static pod** (managed by kubelet, not a Deployment)
 - etcd uses **mTLS** — client certs are required
 - Certs live under `/etc/kubernetes/pki/etcd/`
 - Data lives under `/var/lib/etcd/`
 
----
+## 5. Where the Tools and Data Live
 
-## 3. Where to Install etcdctl / etcdutl
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| `kubectl` | Bastion | Kubernetes API client |
+| `etcdctl` | cp01 | etcd client (online operations) |
+| `etcdutl` | cp01 | etcd offline utility |
+| `aws` CLI | cp01 | S3 upload |
+| etcd certs | `/etc/kubernetes/pki/etcd/` on each CP | mTLS |
+| etcd live data | `/var/lib/etcd/member/` on each CP | etcd internal storage |
+| etcd snapshot | `/var/lib/etcd/snapshot.db` (or wherever we choose) | Backup artifact |
+| IAM role | Attached to cp01 (via EC2 instance profile) | AWS credentials |
 
-### The decision
-
-| Location | Install etcdctl? | Why |
-|----------|-----------------|-----|
-| **Bastion** | ❌ No | Would require copying private keys and opening port 2379 |
-| **All three CPs** | ❌ No | Unnecessary duplication |
-| **One CP (cp01)** | ✅ **Yes** | Same host as the certs and local etcd |
-
-### The reasoning
-
-`kubectl` and `etcdctl` are **not the same tool**:
-
-| Tool | Talks to | Port |
-|------|----------|------|
-| `kubectl` | kube-apiserver | 6443 |
-| `etcdctl` | etcd directly | 2379 |
-
-Installing `etcdctl` on the bastion would require:
-- Copying `/etc/kubernetes/pki/etcd/{ca.crt,server.crt,server.key}` to the bastion — **spreads sensitive private keys across more machines**
-- Opening port 2379 from the bastion to the CPs — **widens the attack surface**
-
-Neither is necessary. On cp01, everything is already in the right place:
-
-```
-cp01
-  │
-  ├── etcd (running)
-  ├── /etc/kubernetes/pki/etcd/  (certs)
-  └── /usr/local/bin/etcdctl      ← we'll add this
-       /usr/local/bin/etcdutl     ← and this
-```
-
-**Golden rule:** keep admin tooling as close to the resource as possible, and minimize credential distribution.
+**Design principle:** keep admin tooling as close to the resource as possible, minimize credential distribution.
 
 ---
 
-## 4. Understanding `/var/lib/etcd/`
+# Part 3 — Understanding `/var/lib/etcd/`
 
 Before touching anything, understand what you're looking at. This directory is one etcd member's local persistent storage.
 
-### The tree
+## 6. The Three-Layer Model
+
+A static pod (like etcd) exists in three independent layers:
+
+```
+┌────────────────────────────────────────────────────────┐
+│  Layer 1 — Manifest file (on node disk)                │
+│                                                        │
+│  /etc/kubernetes/manifests/etcd.yaml                   │
+│                                                        │
+│  Source of truth. Only kubelet reads it.               │
+└────────────────────────────────────────────────────────┘
+                        ↓  read by kubelet
+┌────────────────────────────────────────────────────────┐
+│  Layer 2 — Container (in containerd)                   │
+│                                                        │
+│  The actual running etcd process.                      │
+│  Writes to /var/lib/etcd/ and renews leases.           │
+└────────────────────────────────────────────────────────┘
+                        ↓  registered by kubelet
+┌────────────────────────────────────────────────────────┐
+│  Layer 3 — Mirror pod (in API server / etcd)           │
+│                                                        │
+│  A read-only reflection object.                        │
+│  kubectl shows you THIS. It is NOT the pod.            │
+└────────────────────────────────────────────────────────┘
+```
+
+## 7. WAL, Snapshots, and the Live Database
 
 ```
 /var/lib/etcd/
@@ -174,8 +242,6 @@ Before touching anything, understand what you're looking at. This directory is o
         └── *.tmp                             ← pre-allocated spares
 ```
 
-### What each piece means
-
 | Path | What it is | Managed by |
 |------|-----------|------------|
 | `member/` | This member's persistent storage | etcd |
@@ -183,7 +249,7 @@ Before touching anything, understand what you're looking at. This directory is o
 | `snap/db` | **Live key-value database** (bbolt format) | etcd |
 | `snap/*.snap` | Internal checkpoints (metadata only, ~9 KB each) | etcd |
 | `wal/` | Write-ahead log (Raft log entries) | etcd |
-| `wal/*.wal` | Individual WAL segments (fixed max size) | etcd |
+| `wal/*.wal` | Individual WAL segments (fixed max size ~64 MB) | etcd |
 
 ### The `.snap` filenames
 
@@ -213,7 +279,7 @@ On startup, etcd:
 
 Without internal snapshots, etcd would have to replay the entire WAL from the beginning of time. With them, only recent WAL entries need replaying.
 
-### Three different "snapshots" — don't confuse them
+## 8. The Three Different "Snapshots" You'll Encounter
 
 | Snapshot type | Location | Purpose | Portable? |
 |---------------|----------|---------|-----------|
@@ -234,9 +300,37 @@ Without internal snapshots, etcd would have to replay the entire WAL from the be
 
 ---
 
-## 5. Step 1 — Install etcdctl and etcdutl
+# Part 4 — Where to Install the Tools
 
-### 5.1 — Determine the running etcd version
+## 9. Bastion vs Control-Plane: The Decision
+
+| Location | Install etcdctl? | Why |
+|----------|-----------------|-----|
+| **Bastion** | ❌ No | Would require copying private keys and opening port 2379 |
+| **All three CPs** | ❌ No | Unnecessary duplication |
+| **One CP (cp01)** | ✅ **Yes** | Same host as the certs and local etcd |
+
+### The reasoning
+
+`kubectl` and `etcdctl` are **not the same tool**:
+
+| Tool | Talks to | Port |
+|------|----------|------|
+| `kubectl` | kube-apiserver | 6443 |
+| `etcdctl` | etcd directly | 2379 |
+
+Installing `etcdctl` on the bastion would require:
+
+- Copying `/etc/kubernetes/pki/etcd/{ca.crt,server.crt,server.key}` to the bastion — **spreads sensitive private keys across more machines**
+- Opening port 2379 from the bastion to the CPs — **widens the attack surface**
+
+Neither is necessary. On cp01, everything is already in the right place.
+
+**Golden rule:** keep admin tooling as close to the resource as possible, and minimize credential distribution.
+
+## 10. Installing etcdctl and etcdutl on cp01
+
+### 10.1 — Determine the running etcd version
 
 **Never assume — always check.** The client must match the server version.
 
@@ -255,7 +349,7 @@ registry.k8s.io/etcd:3.6.6-0 registry.k8s.io/etcd:3.6.6-0 registry.k8s.io/etcd:3
 
 The `3.6.6` tells us which etcdctl version to install.
 
-### 5.2 — Download and extract on cp01
+### 10.2 — Download and extract on cp01
 
 ```bash
 ssh ubuntu@cp01
@@ -274,7 +368,7 @@ etcd-v3.6.6-linux-amd64/
 └── etcdutl    ← offline utility
 ```
 
-### 5.3 — Install the two tools
+### 10.3 — Install the two tools
 
 ```bash
 sudo install -m 0755 etcd-v3.6.6-linux-amd64/etcdctl /usr/local/bin/etcdctl
@@ -283,7 +377,7 @@ sudo install -m 0755 etcd-v3.6.6-linux-amd64/etcdutl /usr/local/bin/etcdutl
 
 `install` copies and sets permissions in one step. `0755` = `rwxr-xr-x`.
 
-### 5.4 — Verify
+### 10.4 — Verify
 
 ```bash
 etcdctl version
@@ -307,15 +401,15 @@ API version: 3.6
 | `etcdctl` | Online operations | Running etcd (via network) |
 | `etcdutl` | Offline operations | Snapshot files (via disk) |
 
-`etcdctl snapshot save` requires a running etcd. `etcdutl snapshot status` reads a snapshot file directly.
-
 ---
 
-## 6. Step 2 — Validate the etcd Cluster
+# Part 5 — Creating and Verifying the Snapshot
 
-Before taking a backup, **prove the cluster is healthy**. Otherwise you might snapshot a broken state.
+## 11. Step 1 — Validate the etcd Cluster
 
-### 6.1 — List etcd members
+Before taking a backup, **prove the cluster is healthy**.
+
+### 11.1 — List etcd members
 
 ```bash
 sudo etcdctl \
@@ -339,12 +433,13 @@ Expected output:
 ```
 
 **What to verify:**
+
 - All three members present
 - All `STATUS = started`
 - Names match your CP hostnames
 - `IS LEARNER = false` for all
 
-### 6.2 — Check endpoint health
+### 11.2 — Check endpoint health
 
 ```bash
 sudo etcdctl \
@@ -365,12 +460,7 @@ Expected:
 +------------------------+--------+------------+-------+
 ```
 
-**What to verify:**
-- `HEALTH = true`
-- Latency in single-digit milliseconds (or low tens)
-- No error string
-
-### 6.3 — Understanding the flags
+### 11.3 — Understanding the flags
 
 Every flag is required:
 
@@ -382,9 +472,7 @@ Every flag is required:
 | `--cert` | Our client cert (mTLS) |
 | `--key` | Our private key (mTLS) |
 
-### Optional: shell alias for convenience
-
-Because typing all flags every time is painful:
+### Optional — shell alias for convenience
 
 ```bash
 cat >> ~/.bashrc << 'EOF'
@@ -404,11 +492,9 @@ etcdctl-local member list -w table
 etcdctl-local endpoint health
 ```
 
----
+## 12. Step 2 — Take the Snapshot
 
-## 7. Step 3 — Create the Snapshot
-
-### 7.1 — The command
+### 12.1 — The command
 
 ```bash
 sudo etcdctl \
@@ -419,7 +505,7 @@ sudo etcdctl \
   snapshot save /var/lib/etcd/snapshot.db
 ```
 
-### 7.2 — What happens underneath
+### 12.2 — What happens underneath
 
 1. etcdctl connects to etcd on cp01
 2. etcd coordinates a **consistent** read of its state through Raft
@@ -427,10 +513,10 @@ sudo etcdctl \
 4. etcdctl writes to `snapshot.db.part` first (atomic write pattern)
 5. On success, renames `.part` → `snapshot.db`
 
-### 7.3 — Expected output
+### 12.3 — Expected output
 
 ```
-{"level":"info","ts":"2026-10-06T21:11:04.837502Z","caller":"snapshot/v3_snapshot.go:83","msg":"created temporary db file","path":"/var/lib/etcd/snapshot.db.part"}
+{"level":"info","ts":"...","msg":"created temporary db file","path":"/var/lib/etcd/snapshot.db.part"}
 {"level":"info","ts":"...","msg":"opened snapshot stream; downloading"}
 {"level":"info","ts":"...","msg":"fetching snapshot","endpoint":"https://127.0.0.1:2379"}
 {"level":"info","ts":"...","msg":"completed snapshot read; closing"}
@@ -453,26 +539,16 @@ Server version 3.6.0
 
 Total time: ~210 ms. **No downtime, no disruption.**
 
-### 7.4 — Why `.part` and rename?
+### 12.4 — Why `.part` and rename?
 
 Atomic write pattern. If the process is killed mid-write:
 
 - Without `.part`: you might have a half-written `snapshot.db` that looks complete
 - With `.part`: you either have the full `snapshot.db` or only `.part`
 
-You can check:
+## 13. Step 3 — Verify File Presence
 
-```bash
-ls -l /var/lib/etcd/
-```
-
-If you see `.part` and no `.db`, the snapshot failed. If you see `.db`, it succeeded.
-
----
-
-## 8. Step 4 — Verify the Snapshot File
-
-### 8.1 — Check the file exists
+### 13.1 — Check the file exists
 
 ```bash
 sudo ls -lh /var/lib/etcd/snapshot.db
@@ -484,7 +560,7 @@ Expected:
 -rw------- 1 root root 12M Oct  6 21:11 /var/lib/etcd/snapshot.db
 ```
 
-### 8.2 — Understanding the permissions
+### 13.2 — Understanding the permissions
 
 ```
 -rw-------  1  root  root  12M  ...
@@ -501,54 +577,26 @@ Expected:
 
 Permissions: **600** (owner read/write, nothing else).
 
-**Why 600?** Because a snapshot contains **every Kubernetes Secret** — database passwords, service account tokens, TLS private keys. If any unprivileged user could read this file, they'd have full access to every secret.
+**Why 600?** Because a snapshot contains **every Kubernetes Secret**. If any unprivileged user could read this file, they'd have full access to every secret.
 
 **Rule:** never `chmod 644` an etcd snapshot. Never commit it to git. Never email it.
 
-### 8.3 — The `file` command
+## 14. Step 4 — Verify Snapshot Integrity
 
-```bash
-sudo file /var/lib/etcd/snapshot.db
-```
-
-Output:
-
-```
-/var/lib/etcd/snapshot.db: data
-```
-
-Just "data" — because it's a binary format `file` doesn't recognize. This is expected. `etcdutl` is the only tool that knows how to read it.
-
----
-
-## 9. Step 5 — Verify Snapshot Integrity
-
-### 9.1 — Why verification matters
-
-A file on disk is not automatically a valid snapshot. It could be:
-
-- Truncated (write interrupted)
-- Corrupted (bad disk, silent bit flip)
-- Incompatible (different etcd version)
-
-Verifying **now** means you catch problems **before** you need the backup in an emergency.
-
-### 9.2 — The command
+### 14.1 — The command
 
 ```bash
 sudo etcdutl snapshot status /var/lib/etcd/snapshot.db -w table
 ```
 
-**Note:** this is `etcdutl`, not `etcdctl`. Different tool.
+**Note:** this is `etcdutl`, not `etcdctl`.
 
 | Tool | What it does |
 |------|--------------|
 | `etcdctl snapshot status` | Talks to running etcd (deprecated) |
 | `etcdutl snapshot status` | Reads the file directly (offline) |
 
-The `etcdutl` version works even when etcd is down — which is exactly the situation during disaster recovery.
-
-### 9.3 — Expected output
+### 14.2 — Expected output
 
 ```
 +----------+----------+------------+------------+---------+
@@ -558,24 +606,17 @@ The `etcdutl` version works even when etcd is down — which is exactly the situ
 +----------+----------+------------+------------+---------+
 ```
 
-### 9.4 — Field-by-field
+### 14.3 — Field-by-field
 
 | Column | Meaning | What to watch |
 |--------|---------|---------------|
 | **HASH** | Integrity fingerprint | Compare across copies — must match |
-| **REVISION** | etcd global revision at snapshot time | Increases monotonically; higher = more recent |
-| **TOTAL KEYS** | Number of key-value pairs | Sanity check — should match expected object count |
+| **REVISION** | etcd global revision at snapshot time | Increases monotonically |
+| **TOTAL KEYS** | Number of key-value pairs | Sanity check |
 | **TOTAL SIZE** | Logical data size | May differ from file size |
-| **VERSION** | etcd version that created it | Must be compatible with target for restore |
+| **VERSION** | etcd version that created it | Must be compatible for restore |
 
-### 9.5 — What this proves
-
-✅ The file is readable (not truncated)
-✅ Internal structure is valid
-✅ Data is consistent (HASH computed successfully)
-✅ Version is compatible
-
-### 9.6 — The "verified vs restorable" distinction
+### 14.4 — The "verified vs restorable" distinction
 
 ```
 Level 1 — Present      ✓  (file exists)
@@ -585,13 +626,11 @@ Level 3 — Restorable   ❓  (would need a full restore test)
 
 **Level 3 is the real test.** A snapshot that passes verification but fails to restore would leave you in disaster recovery with no working backup.
 
-**Recommendation:** after this runbook, perform a restore test on an isolated cluster. A backup that has never been successfully restored is only an assumption.
+**Recommendation:** perform a restore test on an isolated cluster after this runbook. A backup that has never been successfully restored is only an assumption.
 
----
+## 15. Step 5 — Copy Off the Node
 
-## 10. Step 6 — Copy the Snapshot Off the Node
-
-### 10.1 — Why this step exists
+### 15.1 — Why this step exists
 
 The snapshot at `/var/lib/etcd/snapshot.db` is on the **same disk** as the live etcd data. If that disk fails, both are gone.
 
@@ -606,23 +645,7 @@ Disk fails → BOTH lost
 
 **This is not a backup.** It's a copy.
 
-### 10.2 — The 3-2-1 rule
-
-A real backup strategy follows:
-
-- **3** copies of data
-- **2** different media / locations
-- **1** offsite
-
-For etcd snapshots, that usually means:
-
-```
-1. Snapshot on cp01 (temporary)
-2. Copy to home directory (convenient)
-3. Upload to S3 (durable, offsite)
-```
-
-### 10.3 — The copy command with timestamp
+### 15.2 — The copy command with timestamp
 
 ```bash
 sudo cp /var/lib/etcd/snapshot.db \
@@ -644,18 +667,14 @@ Why timestamped:
 - Sorted names = chronological order
 - No accidental overwrites
 
-### 10.4 — Fix ownership and permissions
+### 15.3 — Fix ownership and permissions
 
 ```bash
 sudo chown ubuntu:ubuntu /home/ubuntu/etcd-snapshot-cp01-*.db
 sudo chmod 600 /home/ubuntu/etcd-snapshot-cp01-*.db
 ```
 
-`cp` preserves the source's permissions (600 root:root), so we:
-- Change ownership to your user (so you can `scp`, `aws s3 cp`, etc.)
-- Re-apply 600 to make sure permissions are still tight
-
-### 10.5 — Verify the copy
+### 15.4 — Verify the copy
 
 ```bash
 ls -lh /home/ubuntu/etcd-snapshot-cp01-*.db
@@ -668,129 +687,17 @@ The **HASH must match** the original:
 | fc420e4c | ...    ← same as /var/lib/etcd/snapshot.db
 ```
 
-Same HASH = same content. The copy is not corrupted.
-
-### 10.6 — Optional: cryptographic verification
+### 15.5 — Optional: cryptographic verification
 
 ```bash
 sudo sha256sum /var/lib/etcd/snapshot.db /home/ubuntu/etcd-snapshot-cp01-*.db
 ```
 
-Both SHA-256 hashes must match. This is stronger than the etcdutl HASH (which is over logical content, not the file).
+Both SHA-256 hashes must match.
 
----
+## 16. Snapshot Naming and Retention
 
-## 11. Upload to S3 with IAM Role
-
-### 11.1 — Why IAM roles, not static keys
-
-| Aspect | Static keys | IAM role |
-|--------|-------------|----------|
-| Rotation | Manual | Automatic (hourly) |
-| On disk | Yes (`~/.aws/credentials`) | No — in memory only |
-| Valid off-instance | Yes (anywhere) | No (bound to instance) |
-| Leak impact | Forever, from anywhere | ≤1 hour, from cp01 only |
-| Audit trail | Basic | Full (instance ID in CloudTrail) |
-
-IAM roles are the production-grade choice.
-
-### 11.2 — Verify IAM role is attached
-
-On cp01:
-
-```bash
-aws --version
-aws sts get-caller-identity
-```
-
-Expected ARN:
-
-```json
-{
-    "Arn": "arn:aws:sts::123456789012:assumed-role/cp01-etcd-backup-role/i-0123456789abcdef0"
-}
-```
-
-The `assumed-role` prefix is the signature of a role-based identity.
-
-### 11.3 — Verify S3 access
-
-```bash
-aws s3 ls s3://ha-cluster-s3-etcd-lab/
-```
-
-Empty output = bucket exists, no objects (or you lack `ListBucket` — but the policy should include it).
-
-### 11.4 — Upload with encryption
-
-```bash
-aws s3 cp /home/ubuntu/etcd-snapshot-cp01-*.db \
-  s3://ha-cluster-s3-etcd-lab/etcd-snapshots/ \
-  --sse AES256
-```
-
-**`--sse AES256`** = Server-side encryption with AES-256. S3 manages the key. The snapshot contains every Kubernetes Secret, so encryption at rest is mandatory.
-
-### 11.5 — Verify the upload
-
-```bash
-aws s3 ls s3://ha-cluster-s3-etcd-lab/etcd-snapshots/
-```
-
-Expected:
-
-```
-2026-10-06 21:35:12   12582912 etcd-snapshot-cp01-20261006-213045.db
-```
-
-Size should match your local file.
-
-### 11.6 — Verify integrity (the strong check)
-
-```bash
-# MD5 of the local file
-md5sum /home/ubuntu/etcd-snapshot-cp01-*.db
-
-# ETag of the S3 object
-aws s3api head-object \
-  --bucket ha-cluster-s3-etcd-lab \
-  --key etcd-snapshots/etcd-snapshot-cp01-20261006-213045.db \
-  --query ETag --output text
-```
-
-The S3 ETag (in hex, without quotes) should match the local MD5. If yes, the file uploaded byte-perfect.
-
-### 11.7 — Optional: upload from the console
-
-If you prefer the AWS Console:
-
-1. S3 → `ha-cluster-s3-etcd-lab` → **Create folder** → `etcd-snapshots`
-2. Click into the folder → **Upload**
-3. **Add files** → select the snapshot from your local machine
-4. Expand **Properties** → **Server-side encryption settings** → **Amazon S3 managed key (SSE-S3)**
-5. Click **Upload**
-
-The console method requires the file on your local machine first (scp it from cp01).
-
-### 11.8 — Cleanup after upload
-
-After verifying the S3 upload:
-
-```bash
-# Remove the local snapshot (only after S3 is verified)
-sudo rm /var/lib/etcd/snapshot.db
-rm /home/ubuntu/etcd-snapshot-cp01-*.db
-```
-
-**Why clean up?** In a scheduled backup, local snapshots accumulate. Disk fills. etcd crashes. Very bad day.
-
-**But** — for a lab, you may want to keep the local copy until you've tested a restore. Your call.
-
----
-
-## 12. Snapshot Naming and Retention
-
-### 12.1 — Naming conventions
+### 16.1 — Naming conventions
 
 **Can you use any name?** Yes. `etcdctl snapshot save <path>` writes the file to whatever path you give it.
 
@@ -803,14 +710,13 @@ etcdctl snapshot save /tmp/arbitrary-name
 ```
 
 **Requirements:**
+
 - Directory must exist
 - You must have write permission
 - Filename must not already exist (or it gets overwritten)
 - Enough disk space
 
-**The command ignores the `.db` extension** — it's convention, not requirement.
-
-### 12.2 — Overwrite vs separate files
+### 16.2 — Overwrite vs separate files
 
 There is **no automatic versioning** in etcdctl.
 
@@ -826,7 +732,7 @@ etcdctl snapshot save /var/lib/etcd/snapshot.db      → OVERWRITES
 
 **Solution:** always timestamp filenames.
 
-### 12.3 — Recommended format
+### 16.3 — Recommended format
 
 ```
 etcd-snapshot-<cluster>-<host>-YYYYMMDD-HHMMSS.db
@@ -840,74 +746,387 @@ etcd-snapshot-faekcorp-lab-cp01-20261007-030000.db
 etcd-snapshot-faekcorp-lab-cp01-20261007-090000.db
 ```
 
-**Why this format:**
-- `YYYYMMDD-HHMMSS` sorts chronologically as text
-- No characters that break filenames
-- Human-readable
-- Machine-parseable
-
-### 12.4 — S3 key structure
-
-Organize S3 keys to match:
+### 16.4 — S3 key structure
 
 ```
 s3://ha-cluster-s3-etcd-lab/
   └── etcd-snapshots/
-      └── 2026/
-          └── 10/
-              └── 06/
-                  └── etcd-snapshot-cp01-20261006-211105.db
+      └── etcd-snapshot-cp01-20261006-211105.db
 ```
 
-Or keep it flat:
+Or hierarchical by date:
 
 ```
-s3://ha-cluster-s3-etcd-lab/etcd-snapshots/
-  ├── etcd-snapshot-cp01-20261006-000000.db
-  ├── etcd-snapshot-cp01-20261006-060000.db
-  ├── etcd-snapshot-cp01-20261006-120000.db
-  └── etcd-snapshot-cp01-20261006-180000.db
+s3://ha-cluster-s3-etcd-lab/etcd-snapshots/2026/10/06/etcd-snapshot-...
 ```
-
-Hierarchical is easier for retention policies (delete the whole `2025/` folder).
-
-### 12.5 — S3 lifecycle policy
-
-S3 can automatically delete or transition objects based on age:
-
-```
-Rule: etcd-snapshots
-  Transition to S3 Standard-IA      after 7 days
-  Transition to Glacier Instant     after 30 days
-  Delete                            after 365 days
-```
-
-**Retention best practice:**
-
-| Age | Retention | Why |
-|-----|-----------|-----|
-| 0–24h | Hourly snapshots | Immediate recovery |
-| 1–30d | Daily snapshots | Recent disaster recovery |
-| 1–12mo | Weekly/monthly | Long-term audit, compliance |
-
-Configure with an S3 lifecycle rule. This is what keeps S3 backups cheap.
 
 ---
 
-## 13. Production Considerations
+# Part 6 — Uploading to S3 with IAM Role
 
-### 13.1 — Automate, but not with Kubernetes CronJob
+## 17. Why IAM Roles, Not Static Keys
 
-**Don't** run backups as a Kubernetes CronJob.
+| Aspect | Static keys | IAM role |
+|--------|-------------|----------|
+| Rotation | Manual | Automatic (hourly) |
+| On disk | Yes (`~/.aws/credentials`) | No — in memory only |
+| Valid off-instance | Yes (anywhere) | No (bound to instance) |
+| Leak impact | Forever, from anywhere | ≤1 hour, from cp01 only |
+| Audit trail | Basic | Full (instance ID in CloudTrail) |
 
-**Why:** if the cluster is broken, the CronJob can't run. The backup mechanism must not depend on the system it's backing up.
+**IAM roles are the production-grade choice.**
+
+## 18. The Two Identities: You vs the Instance
+
+There are **two separate AWS identities** involved. They are not the same.
+
+### Identity 1 — YOU (the human admin)
+
+```
+    Your laptop
+         │
+         │  aws configure (with YOUR personal access keys)
+         │  OR
+         │  aws sso login
+         │
+         ▼
+    AWS account (admin permissions)
+         │
+         │  Create IAM policy
+         │  Create IAM role
+         │  Attach role to cp01
+         ▼
+    Done — role exists and is attached
+```
+
+**Who:** you, on your laptop.
+**Purpose:** make changes to the AWS account.
+**Credentials:** your personal credentials, admin-level, used sparingly.
+
+### Identity 2 — cp01 (the instance)
+
+```
+    cp01 (EC2 instance)
+         │
+         │  IAM role attached → IMDS provides temporary credentials
+         │  (no ~/.aws/credentials file)
+         │
+         ▼
+    AWS account (limited to backup permissions)
+         │
+         │  aws s3 cp → uploads snapshot
+         ▼
+    S3 bucket
+```
+
+**Who:** the EC2 instance, wearing the `cp01-etcd-backup-role`.
+**Purpose:** perform the specific task (upload to S3).
+**Credentials:** automatic, temporary, provided by IMDS.
+
+## 19. What Goes Where
+
+| Thing | Where it goes | Why |
+|-------|--------------|-----|
+| **IAM policy** | AWS account | Defines what actions are allowed |
+| **IAM role** | AWS account | Identity that holds the policy |
+| **Attach role to cp01** | AWS account → cp01 | Gives cp01 permission to use the role |
+| **AWS CLI** | cp01 (install) | The tool that makes the API calls |
+| **Access keys (yours)** | Your laptop only | For you to manage AWS as an admin |
+| **`aws configure`** | Your laptop only | Sets up your personal CLI |
+| **`~/.aws/credentials` on cp01** | **Nothing** | Should NOT exist — role provides credentials |
+
+**One sentence:** your laptop sets up the role; the role authorizes cp01; cp01 never sees a static key.
+
+## 20. Console Setup Steps
+
+There are three things to create or attach in the AWS Console.
+
+### 20.1 — Create the IAM Policy
+
+1. Sign in to the AWS Console, open **IAM**.
+2. Left navigation: **Policies** → **Create policy**.
+3. Switch to the **JSON** tab.
+4. Paste:
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "EtcdSnapshotUpload",
+            "Effect": "Allow",
+            "Action": ["s3:PutObject", "s3:PutObjectAcl"],
+            "Resource": "arn:aws:s3:::ha-cluster-s3-etcd-lab/etcd-snapshots/*"
+        },
+        {
+            "Sid": "EtcdSnapshotList",
+            "Effect": "Allow",
+            "Action": "s3:ListBucket",
+            "Resource": "arn:aws:s3:::ha-cluster-s3-etcd-lab"
+        },
+        {
+            "Sid": "EtcdSnapshotRead",
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::ha-cluster-s3-etcd-lab/etcd-snapshots/*"
+        }
+    ]
+}
+```
+
+5. **Next**.
+6. Name: `cp01-etcd-backup-upload-policy`.
+7. **Create policy**.
+
+### 20.2 — Create the IAM Role
+
+1. In IAM, left navigation: **Roles** → **Create role**.
+2. Trusted entity: **AWS service**.
+3. Use case: **EC2** → **Next**.
+4. Search for your policy, check the box → **Next**.
+5. Name: `cp01-etcd-backup-role`.
+6. **Create role**.
+
+> An **instance profile** with the same name is created automatically.
+
+### 20.3 — Attach the Role to cp01
+
+1. Open **EC2**.
+2. Left navigation: **Instances**.
+3. Check the box next to cp01.
+4. **Actions** → **Security** → **Modify IAM role**.
+5. Select `cp01-etcd-backup-role`.
+6. **Update IAM role**.
+
+No restart needed. The AWS CLI on cp01 picks up the role on the next command.
+
+## 21. CLI Alternative
+
+If you prefer the CLI (from your laptop with admin credentials):
+
+```bash
+# 1. Create the policy
+aws iam create-policy \
+  --policy-name cp01-etcd-backup-upload-policy \
+  --policy-document file://policy.json
+
+# 2. Create the role (trust policy allows EC2 to assume it)
+aws iam create-role \
+  --role-name cp01-etcd-backup-role \
+  --assume-role-policy-document file://trust-policy.json
+
+# 3. Attach the policy to the role
+aws iam attach-role-policy \
+  --role-name cp01-etcd-backup-role \
+  --policy-arn arn:aws:iam::123456789012:policy/cp01-etcd-backup-upload-policy
+
+# 4. Attach role to the EC2 instance
+aws ec2 associate-iam-instance-profile \
+  --instance-id i-0123456789abcdef0 \
+  --iam-instance-profile Name=cp01-etcd-backup-role
+```
+
+Where `trust-policy.json` is:
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {"Service": "ec2.amazonaws.com"},
+            "Action": "sts:AssumeRole"
+        }
+    ]
+}
+```
+
+## 22. Installing AWS CLI on cp01 (No Configuration Needed)
+
+### 22.1 — Install
+
+```bash
+cd /tmp
+sudo apt update
+sudo apt install -y unzip curl
+
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+
+aws --version
+```
+
+Expected:
+
+```
+aws-cli/2.x.x Python/3.x.x Linux/... 
+```
+
+### 22.2 — Do NOT run `aws configure` on cp01
+
+Running `aws configure` on cp01 would write static credentials to `~/.aws/credentials`. This is exactly what we're avoiding.
+
+The AWS CLI's credential resolution order:
+
+```
+1. Command-line args
+2. Environment variables
+3. ~/.aws/credentials file
+4. ~/.aws/config file
+5. Container credentials
+6. EC2 Instance Metadata Service (IMDS) ← we want this
+```
+
+If steps 1-5 are empty, the CLI falls through to IMDS and picks up the IAM role. So we install but do not configure.
+
+### 22.3 — Verify the installation found the role
+
+```bash
+aws sts get-caller-identity
+```
+
+Expected:
+
+```json
+{
+    "UserId": "AROAXXXXXXXXXXXXXXXXX:i-0123456789abcdef0",
+    "Account": "123456789012",
+    "Arn": "arn:aws:sts::123456789012:assumed-role/cp01-etcd-backup-role/i-0123456789abcdef0"
+}
+```
+
+The `assumed-role` prefix confirms the IAM role is providing credentials automatically.
+
+### 22.4 — If it fails
+
+| Error | Fix |
+|-------|-----|
+| `Unable to locate credentials` | Attach role to cp01 |
+| `Access Denied` on `s3 ls` | Check IAM policy |
+| `NoSuchBucket` | Bucket name typo, wrong region |
+
+**Debug IMDS reachability:**
+
+```bash
+TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/
+```
+
+If this returns a role name, IMDS is fine.
+
+### 22.5 — Check no static credentials lurk
+
+```bash
+# 1. No credentials file
+ls -la ~/.aws/ 2>/dev/null || echo "no ~/.aws directory — good"
+
+# 2. No AWS env vars
+env | grep -i aws || echo "no AWS env vars — good"
+```
+
+Both should report "good." If not, remove the credentials file and unset the env vars.
+
+## 23. Verifying the Role Works
+
+Run on **cp01**:
+
+```bash
+# 1. AWS CLI is installed
+aws --version
+
+# 2. IAM role provides credentials
+aws sts get-caller-identity
+
+# 3. S3 access works
+aws s3 ls s3://ha-cluster-s3-etcd-lab/
+```
+
+| Result | Meaning |
+|--------|---------|
+| All three work | Ready to upload |
+| `Unable to locate credentials` | Role not attached or IMDS disabled |
+| `Access Denied` | IAM policy missing permissions |
+| `NoSuchBucket` | Bucket name wrong, wrong region |
+
+## 24. The Upload
+
+### 24.1 — The command
+
+```bash
+aws s3 cp /home/ubuntu/etcd-snapshot-cp01-*.db \
+  s3://ha-cluster-s3-etcd-lab/etcd-snapshots/ \
+  --sse AES256
+```
+
+**`--sse AES256`** = server-side encryption with AES-256. S3 manages the key. Mandatory for snapshots containing secrets.
+
+### 24.2 — Expected output
+
+```
+upload: ./etcd-snapshot-cp01-20261006-213045.db to s3://ha-cluster-s3-etcd-lab/etcd-snapshots/etcd-snapshot-cp01-20261006-213045.db
+```
+
+### 24.3 — Verify the upload
+
+```bash
+aws s3 ls s3://ha-cluster-s3-etcd-lab/etcd-snapshots/
+```
+
+Expected:
+
+```
+2026-10-06 21:35:12   12582912 etcd-snapshot-cp01-20261006-213045.db
+```
+
+Size should match your local file.
+
+### 24.4 — Strong verification (MD5/ETag)
+
+```bash
+# MD5 of local file
+md5sum /home/ubuntu/etcd-snapshot-cp01-*.db
+
+# ETag of S3 object
+aws s3api head-object \
+  --bucket ha-cluster-s3-etcd-lab \
+  --key etcd-snapshots/$(basename /home/ubuntu/etcd-snapshot-cp01-*.db) \
+  --query ETag --output text
+```
+
+The S3 ETag (in hex, without quotes) should match the local MD5.
+
+### 24.5 — Cleanup
+
+After verifying the S3 upload:
+
+```bash
+# Remove the local snapshot (only after S3 is verified)
+sudo rm /var/lib/etcd/snapshot.db
+rm /home/ubuntu/etcd-snapshot-cp01-*.db
+```
+
+**Why clean up?** In a scheduled backup, local snapshots accumulate. Disk fills. etcd crashes.
+
+---
+
+# Part 7 — Production Considerations
+
+## 25. Automation and Scheduling
+
+**Do NOT use a Kubernetes CronJob for etcd backups.**
+
+If the cluster is broken, a CronJob inside the cluster can't run. The backup mechanism must not depend on the system it's backing up.
 
 **Use instead:**
+
 - systemd timer on a CP node
 - External scheduler (Jenkins, GitHub Actions, dedicated backup server)
 - Cloud-native tools (Velero, Kasten)
 
-### 13.2 — Full automation flow
+### Full automation flow
 
 ```
 Every 6 hours:
@@ -922,7 +1141,7 @@ Every 6 hours:
   8. Log success/failure to monitoring
 ```
 
-### 13.3 — Least-privilege IAM policy
+## 26. Least-Privilege IAM Policy
 
 ```json
 {
@@ -952,32 +1171,26 @@ Every 6 hours:
 
 **Notably absent:** `s3:DeleteObject`, `s3:DeleteBucket`, `s3:*` wildcards. The role cannot delete backups.
 
-### 13.4 — IAM role vs static keys
+## 27. Retention and Lifecycle
 
-Always prefer IAM roles on EC2. Static keys should only be used when there's no alternative (local development, CI runners without OIDC, etc.).
+### Recommended retention
 
-### 13.5 — Verification cadence
+| Age | Retention | Why |
+|-----|-----------|-----|
+| 0–24h | Hourly snapshots | Immediate recovery |
+| 1–30d | Daily snapshots | Recent disaster recovery |
+| 1–12mo | Weekly/monthly | Long-term audit, compliance |
 
-| Verification | Frequency |
-|--------------|-----------|
-| Snapshot creation | Every backup run (automated) |
-| Snapshot integrity (`etcdutl snapshot status`) | Every backup run |
-| S3 upload integrity (MD5/ETag) | Every backup run |
-| **Full restore test** | Quarterly, on isolated cluster |
+### S3 lifecycle policy
 
-**A backup that has never been restored is only an assumption.**
+```
+Rule: etcd-snapshots
+  Transition to S3 Standard-IA   after 7 days
+  Transition to Glacier Instant  after 30 days
+  Delete                         after 365 days
+```
 
-### 13.6 — Encryption
-
-| Layer | Method |
-|-------|--------|
-| At rest in S3 | `--sse AES256` (S3-managed key) or `--sse aws:kms` (KMS-managed) |
-| In transit (cp01 → S3) | HTTPS (default for AWS CLI) |
-| On cp01 disk (temporary) | File permission 600 (root only) |
-
-For highly regulated environments, use KMS with key rotation and CloudTrail audit.
-
-### 13.7 — Monitoring and alerting
+## 28. Monitoring and Alerting
 
 - Alert if backup hasn't run in >12 hours
 - Alert if `etcdutl snapshot status` fails
@@ -985,83 +1198,22 @@ For highly regulated environments, use KMS with key rotation and CloudTrail audi
 - Alert if snapshot size drops suddenly (possible data loss)
 - Alert on unexpected S3 access (potential breach)
 
-### 13.8 — What the backup does NOT contain
+## 29. What's Not Covered
 
-- Container images
-- Application data on PersistentVolumes (databases, file uploads)
-- Cloud provider resources (ELBs, EBS volumes, S3 buckets)
-- External systems (DNS, certificate managers)
-- Certificates and private keys (well — the ones in Kubernetes Secrets are there, but the etcd PKI itself is not)
+- **Restore procedure** — separate runbook, done on isolated test cluster
+- **Volume backups** (PersistentVolumes, databases) — separate tools (Velero, app-specific)
+- **Certificate backups** (etcd PKI) — separate procedure
+- **Multi-cluster aggregation** — different S3 key strategies
 
-**You need separate backup strategies for each of those.**
+**A backup that has never been restored is only an assumption.**
 
 ---
 
-## 14. Complete Command Reference
+# Part 8 — Reference
 
-### Quick copy-paste block (for future use)
+## 30. Complete Command Reference
 
-```bash
-# ============================================
-# On cp01 — etcd backup workflow
-# ============================================
-
-# 1. Verify cluster health
-sudo etcdctl \
-  --endpoints=https://127.0.0.1:2379 \
-  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-  --cert=/etc/kubernetes/pki/etcd/server.crt \
-  --key=/etc/kubernetes/pki/etcd/server.key \
-  member list -w table
-
-sudo etcdctl \
-  --endpoints=https://127.0.0.1:2379 \
-  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-  --cert=/etc/kubernetes/pki/etcd/server.crt \
-  --key=/etc/kubernetes/pki/etcd/server.key \
-  endpoint health -w table
-
-# 2. Take snapshot
-sudo etcdctl \
-  --endpoints=https://127.0.0.1:2379 \
-  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-  --cert=/etc/kubernetes/pki/etcd/server.crt \
-  --key=/etc/kubernetes/pki/etcd/server.key \
-  snapshot save /var/lib/etcd/snapshot.db
-
-# 3. Verify integrity
-sudo etcdutl snapshot status /var/lib/etcd/snapshot.db -w table
-
-# 4. Copy with timestamped name
-sudo cp /var/lib/etcd/snapshot.db \
-  /home/ubuntu/etcd-snapshot-cp01-$(date +%Y%m%d-%H%M%S).db
-sudo chown ubuntu:ubuntu /home/ubuntu/etcd-snapshot-cp01-*.db
-sudo chmod 600 /home/ubuntu/etcd-snapshot-cp01-*.db
-
-# 5. Verify the copy
-sudo etcdutl snapshot status /home/ubuntu/etcd-snapshot-cp01-*.db -w table
-
-# 6. Upload to S3 with encryption
-aws s3 cp /home/ubuntu/etcd-snapshot-cp01-*.db \
-  s3://ha-cluster-s3-etcd-lab/etcd-snapshots/ \
-  --sse AES256
-
-# 7. Verify upload
-aws s3 ls s3://ha-cluster-s3-etcd-lab/etcd-snapshots/
-
-# 8. (Optional) Cryptographic verification
-md5sum /home/ubuntu/etcd-snapshot-cp01-*.db
-aws s3api head-object \
-  --bucket ha-cluster-s3-etcd-lab \
-  --key etcd-snapshots/$(basename /home/ubuntu/etcd-snapshot-cp01-*.db) \
-  --query ETag --output text
-
-# 9. Cleanup local
-sudo rm /var/lib/etcd/snapshot.db
-rm /home/ubuntu/etcd-snapshot-cp01-*.db
-```
-
-### Reference table — all commands
+### etcdctl / etcdutl
 
 | Command | Purpose |
 |---------|---------|
@@ -1072,14 +1224,29 @@ rm /home/ubuntu/etcd-snapshot-cp01-*.db
 | `etcdctl snapshot save <path>` | Create backup snapshot |
 | `etcdutl snapshot status <path>` | Verify snapshot integrity |
 | `etcdutl snapshot restore <path>` | Restore (separate runbook) |
+
+### AWS CLI
+
+| Command | Purpose |
+|---------|---------|
+| `aws --version` | Verify AWS CLI installed |
 | `aws sts get-caller-identity` | Verify AWS identity |
 | `aws s3 ls <bucket>/` | List S3 objects |
 | `aws s3 cp <local> <s3>` | Upload to S3 |
 | `aws s3api head-object` | Get S3 object metadata (ETag) |
-| `sha256sum <file>` | Local file hash |
-| `md5sum <file>` | Local file MD5 |
+| `aws iam create-policy` | Create IAM policy |
+| `aws iam create-role` | Create IAM role |
+| `aws iam attach-role-policy` | Attach policy to role |
+| `aws ec2 associate-iam-instance-profile` | Attach role to instance |
 
-### Reference table — key paths
+### Local file utilities
+
+| Command | Purpose |
+|---------|---------|
+| `sha256sum <file>` | SHA-256 hash |
+| `md5sum <file>` | MD5 hash |
+
+## 31. Key Paths
 
 | Path | What it is |
 |------|-----------|
@@ -1092,10 +1259,11 @@ rm /home/ubuntu/etcd-snapshot-cp01-*.db
 | `/var/lib/etcd/member/snap/db` | Live key-value database |
 | `/var/lib/etcd/member/wal/` | Write-ahead log |
 | `/var/lib/etcd/snapshot.db` | Backup snapshot (created by us) |
+| `/usr/local/bin/etcdctl` | etcdctl binary |
+| `/usr/local/bin/etcdutl` | etcdutl binary |
+| `~/.aws/credentials` | Static AWS credentials (should NOT exist on cp01) |
 
----
-
-## Summary — The Whole Flow at a Glance
+## 32. Summary — The Whole Flow at a Glance
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -1108,6 +1276,13 @@ rm /home/ubuntu/etcd-snapshot-cp01-*.db
 │  Verify      │  etcdutl snapshot status (HASH, revision, keys) │
 ├──────────────────────────────────────────────────────────────┤
 │  Copy        │  home directory with timestamped name           │
+├──────────────────────────────────────────────────────────────┤
+│  AWS setup   │  IAM policy + role + attach to cp01             │
+│              │  (done from your laptop, not cp01)              │
+├──────────────────────────────────────────────────────────────┤
+│  Install CLI │  aws CLI on cp01, no aws configure              │
+├──────────────────────────────────────────────────────────────┤
+│  Verify role │  aws sts get-caller-identity                    │
 ├──────────────────────────────────────────────────────────────┤
 │  Upload      │  aws s3 cp with --sse AES256                    │
 ├──────────────────────────────────────────────────────────────┤
@@ -1132,7 +1307,7 @@ rm /home/ubuntu/etcd-snapshot-cp01-*.db
       live storage          backup snapshot
       /var/lib/etcd/        snapshot.db
       /member/                   │
-                                 │  upload
+                                 │  upload (via IAM role)
                                  ▼
                               S3 bucket
                               (encrypted, versioned)
