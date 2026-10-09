@@ -1,4 +1,4 @@
-# Kubernetes etcd Restore from Snapshot — Complete Runbook
+# Kubernetes etcd Restore from Snapshot (S3 Bucket) — Complete Runbook
 
 A hands-on, step-by-step guide for restoring a 3-member stacked etcd cluster on a kubeadm-based Kubernetes cluster from a snapshot, including point-in-time verification and post-restore worker reconciliation.
 
